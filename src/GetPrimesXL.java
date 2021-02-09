@@ -48,13 +48,15 @@ public class GetPrimesXL {
 
     public static void valueTestGetPrimes() {
 
+        int[] primes= {1};
+
         for (int x = 1; x <= 9; x++) { // we start breaking down at 431000
 
             int max = (int) Math.pow(10,x);
 
             long startTime = System.currentTimeMillis();
 
-            getPrimesTo(max);
+            primes = getPrimesTo(max);
 
             long endTime = System.currentTimeMillis();
 
@@ -62,15 +64,19 @@ public class GetPrimesXL {
 
             System.out.println("[" + max + "] Time take to execute the whole script is " + duration + " milliseconds");
 
+
+
+        }
+
+        for (int i = primes.length - 10; i < primes.length; i++) {
+            System.out.println(primes[i]);
         }
 
     }
 
     public static void main(String[] args) {
 
-        valueTestGetPrimes();
-
-        /*
+        //valueTestGetPrimes();
 
         long startTime = System.currentTimeMillis();
 
@@ -82,41 +88,47 @@ public class GetPrimesXL {
 
         System.out.println("Time take to execute the whole script is " + duration + " milliseconds");
 
-         */
+
     }
 
-    /*
 
-    public static void speedTestGetPrimes(int[] primes){
+
+    public static void speedTestGetPrimes(){
 
         double total = 0;
 
-        getPrimes(primes,100000000,100000);
+        getPrimesTo(1000000000); //warmup kernel
 
         for (int i = 0; i < 10; i++) {
-            total += getPrimes(primes,100000000,100000);
+            long startTime = System.currentTimeMillis();
+            getPrimesTo(1000000000);
+            long endTime = System.currentTimeMillis();
+            total += (endTime - startTime);
         }
 
         System.out.println("Average run time is " + (total / 10) + " (Excluding warmup)");
 
     }
 
+    static int[] globalPrimesMap;
 
-     */
-    public static int[] getPrimes(final int[] primes, final int max, final int miniThreadSize){ //miniThreadSize is pretty irrelevant, I would suggest 100,000
+    static int[] globalThreadIdMap;
+
+
+    public static int[] getPrimes(final int[] primes, final int max, final int x){
 
         final boolean[] isNotPrime = new boolean[max];
+
+        final int[] miniThreadSize = {x}; //Has to be an array for silly reasons
 
         //----------------------------------------
 
         int totalNumberOfMiniThreads = 0;
 
-        int[] primeNumberOfMiniThreads = new int[primes.length];
-
-        int numberOfMiniThreads;
+        int[] primeNumberOfMiniThreads = new int[primes.length]; //The number of miniThreads for each prime
 
         for (int i = 0; i < primes.length; i++) {
-            numberOfMiniThreads = calculateNumberOfMiniThreads(primes[i], max, miniThreadSize);
+            int numberOfMiniThreads = calculateNumberOfMiniThreads(primes[i], max, miniThreadSize[0]);
 
             if(numberOfMiniThreads < 0){ //This detects any kind of overflow error (For testing purposes)
                 System.out.println(numberOfMiniThreads + " for " + primes[i]);
@@ -128,31 +140,41 @@ public class GetPrimesXL {
 
         //------------------------------------------
 
-        final int[] primesMap = generatePrimesMap(primes, primeNumberOfMiniThreads, totalNumberOfMiniThreads);
+        generatePrimesMapAndThreadIdMap(primes, primeNumberOfMiniThreads, totalNumberOfMiniThreads);
 
-        final int[] startingValuesMap = generateStatingValues(primes, primeNumberOfMiniThreads, totalNumberOfMiniThreads, miniThreadSize);
+        final int[] threadIdMap = globalThreadIdMap;
+
+        final int[] primesMap = globalPrimesMap;
 
         Kernel kernel = new Kernel(){
 
             @Override public void run() {
 
-                int gid = getGlobalId(); //get global id (number between 0 and primes.length), this is unique to each thread
+                int gid = getGlobalId(); //get global id (number between 0 and totalNumberOfMiniThreads), this is unique to each thread
 
-                int n = primesMap[gid]; // converts gid to prime
+                int prime = primesMap[gid]; // converts gid to prime
 
-                int x = startingValuesMap[gid]; // converts gid to starting value
+                int miniThreadId = threadIdMap[gid]; // converts gid to threadId
 
-                for (int i = 0; i <= miniThreadSize; i++) { //loop through and set all multiples in miniThread of the prime we are implementing to be not prime
+                int x = prime * (prime + miniThreadSize[0] * miniThreadId); // calculate starting value
 
-                    if(x >= isNotPrime.length){return;} //stops the thread if we get to the end of the array (I really didn't think this would work... but it does) PS. What if this didn't do anything and i'm writing to random parts of the GPU memory?
+                for (int i = 0; i <= miniThreadSize[0]; i++) { //loop through and set all multiples in miniThread of the prime we are implementing to be not prime
+
+                    if(x >= isNotPrime.length){return;} //stops the thread if we get to the end of the array (I really didn't think this would work... but it does) PS. What if this doesn't do anything and i'm writing to random parts of the GPU memory?
 
                     isNotPrime[x] = true;
-                    x += n;
+                    x += prime;
 
                 }
 
             }
         };
+
+        //kernel.setExplicit(true);
+        //kernel.put(primesMap);
+        //kernel.put(threadIdMap);
+        //kernel.put(miniThreadSize);
+        //kernel.put(isNotPrime);
 
         kernel.setExecutionMode(Kernel.EXECUTION_MODE.GPU);
 
@@ -168,6 +190,7 @@ public class GetPrimesXL {
 
         System.out.println("Time take to execute the kernel is " + duration + " milliseconds");
 
+        //kernel.get(isNotPrime);
         kernel.dispose();
 
 
@@ -195,37 +218,23 @@ public class GetPrimesXL {
         return output;
     }
 
-    public static int[] generatePrimesMap(int[] primes, int[] primeNumberOfMiniThreads, int totalNumberOfMiniThreads){
+    public static void generatePrimesMapAndThreadIdMap(int[] primes, int[] primeNumberOfMiniThreads, int totalNumberOfMiniThreads){
 
-        int[] primesMap = new int[totalNumberOfMiniThreads];
+        globalPrimesMap = new int[totalNumberOfMiniThreads];
 
-        int index = 0;
-
-        for (int i = 0; i < primes.length; i++) {
-            for (int j = 0; j < primeNumberOfMiniThreads[i]; j++) {
-                primesMap[index] = primes[i];
-                index++;
-            }
-        }
-
-        return primesMap;
-    }
-
-    public static int[] generateStatingValues(int[] primes, int[] primeNumberOfMiniThreads, int totalNumberOfMiniThreads, int miniThreadSize){
-
-        int[] startingValues = new int[totalNumberOfMiniThreads];
+        globalThreadIdMap = new int[totalNumberOfMiniThreads];
 
         int index = 0;
 
         for (int i = 0; i < primes.length; i++) {
             for (int j = 0; j < primeNumberOfMiniThreads[i]; j++) {
-                startingValues[index] = primes[i] * primes[i] + primes[i] * miniThreadSize * j;
+                globalPrimesMap[index] = primes[i];
+                globalThreadIdMap[index] = j;
                 index++;
             }
         }
 
-        return startingValues;
-
+        // return primesMap;
     }
 
     public static int calculateNumberOfMiniThreads(long prime, long max, long miniThreadSize){ //fyi this does not work if the miniThreadSize is too large ¯\_(ツ)_/¯
@@ -238,13 +247,7 @@ public class GetPrimesXL {
 
         long lengthOfOneThread = prime * miniThreadSize;
 
-        if(max < lengthOfOneThread){
-            return 1; //we will only need one thread
-        }
-
-        long myPrime = prime;
-
-        long primeSquared = myPrime * myPrime;
+        long primeSquared = prime * prime;
 
         return (int) ((max - primeSquared) / lengthOfOneThread) + 1; //rounded up
     }
